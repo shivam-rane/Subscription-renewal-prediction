@@ -1,0 +1,27 @@
+{
+  "data_path": "C:\\Users\\shiva\\mlfinal\\subscription-renewal-prediction-system\\data\\external\\subscription_accounts.csv",
+  "row_count": 4250,
+  "expected_columns": [
+    "monthly_usage_hours",
+    "login_frequency",
+    "last_login_days",
+    "support_tickets",
+    "payment_failures",
+    "subscription_plan",
+    "renewed"
+  ],
+  "missing_columns": [],
+  "null_counts": {
+    "monthly_usage_hours": 0,
+    "login_frequency": 0,
+    "last_login_days": 0,
+    "support_tickets": 0,
+    "payment_failures": 0,
+    "subscription_plan": 0,
+    "renewed": 0
+  },
+  "target_classes": [
+    0,
+    1
+  ]
+}

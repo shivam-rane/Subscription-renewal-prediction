@@ -1,0 +1,91 @@
+{
+  "backend": "fallback",
+  "report_path": "C:\\Users\\shiva\\mlfinal\\subscription-renewal-prediction-system\\reports\\renewal_drift_report.html",
+  "error": "No module named 'evidently'",
+  "columns": [
+    {
+      "column": "monthly_usage_hours",
+      "reference_mean": 22.261479411764707,
+      "current_mean": 22.45517647058823,
+      "mean_delta": 0.19369705882352406
+    },
+    {
+      "column": "login_frequency",
+      "reference_mean": 19.01804411764706,
+      "current_mean": 19.277929411764703,
+      "mean_delta": 0.25988529411764105
+    },
+    {
+      "column": "last_login_days",
+      "reference_mean": 6.7138911764705895,
+      "current_mean": 6.649952941176471,
+      "mean_delta": -0.06393823529411868
+    },
+    {
+      "column": "support_tickets",
+      "reference_mean": 2.8755882352941176,
+      "current_mean": 2.8929411764705883,
+      "mean_delta": 0.017352941176470793
+    },
+    {
+      "column": "payment_failures",
+      "reference_mean": 0.9285294117647059,
+      "current_mean": 0.9141176470588235,
+      "mean_delta": -0.014411764705882457
+    },
+    {
+      "column": "plan_value_index",
+      "reference_mean": 1.1447058823529412,
+      "current_mean": 1.1524705882352944,
+      "mean_delta": 0.007764705882353118
+    },
+    {
+      "column": "engagement_score",
+      "reference_mean": 3.6444938598534837,
+      "current_mean": 3.7904227860645454,
+      "mean_delta": 0.14592892621106168
+    },
+    {
+      "column": "activity_ratio",
+      "reference_mean": 0.8478852987621042,
+      "current_mean": 0.854339426014037,
+      "mean_delta": 0.00645412725193284
+    },
+    {
+      "column": "support_pressure",
+      "reference_mean": 0.14990559129469858,
+      "current_mean": 0.1481892233311816,
+      "mean_delta": -0.0017163679635169848
+    },
+    {
+      "column": "payment_reliability",
+      "reference_mean": 0.6170098039215686,
+      "current_mean": 0.6155882352941177,
+      "mean_delta": -0.0014215686274509087
+    },
+    {
+      "column": "usage_momentum",
+      "reference_mean": 66.52683620097699,
+      "current_mean": 67.3704734528569,
+      "mean_delta": 0.8436372518799118
+    },
+    {
+      "column": "risk_score",
+      "reference_mean": 1.607683323529412,
+      "current_mean": 1.5980024705882352,
+      "mean_delta": -0.00968085294117671
+    },
+    {
+      "column": "renewal_probability",
+      "reference_mean": 0.6600680832686525,
+      "current_mean": 0.6668223414079895,
+      "mean_delta": 0.006754258139336944
+    },
+    {
+      "column": "renewed",
+      "reference_mean": 0.66,
+      "current_mean": 0.66,
+      "mean_delta": 0.0
+    }
+  ]
+}

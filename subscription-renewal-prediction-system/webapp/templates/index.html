@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+
+{% block title %}
+Subscription Renewal Prediction
+{% endblock title %}
+
+
+{% block custom_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" integrity="sha384-xOolHFLEh07PJGoPkLv1IbcEPTNtaed2xpHsD9ESMhqIYd0nLMwNLD69Npy4HI+N" crossorigin="anonymous">
+{% endblock custom_css %}
+
+
+{% block body %}
+<nav class="navbar navbar-expand-lg navbar-light shadow fixed-top">
+    <a class="navbar-brand" href="/">Subscription Renewal Prediction</a>
+    <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav"
+        aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+    </button>
+</nav>
+<div>
+    <div class="container-fluid masthead">
+        <br>
+        <br>
+        <br>
+        <br>
+        <div class="container">
+            <div class="row">
+                <div class="col">
+                    <form method="POST">
+                        <div class="form-group">
+                            <label for="subscription-renewal">
+                                <blockquote class="blockquote">
+                                    <p class="mb-2">Enter subscription activity details:</p>
+                                </blockquote>
+                            </label>
+                            <textarea class="form-control" name="monthly_usage_hours" rows="1"
+                                placeholder="monthly_usage_hours"></textarea>
+                            <textarea class="form-control" name="login_frequency" rows="1"
+                                placeholder="login_frequency"></textarea>
+                            <textarea class="form-control" name="last_login_days" rows="1"
+                                placeholder="last_login_days"></textarea>
+                            <textarea class="form-control" name="support_tickets" rows="1"
+                                placeholder="support_tickets"></textarea>
+                            <textarea class="form-control" name="payment_failures" rows="1"
+                                placeholder="payment_failures"></textarea>
+                            <textarea class="form-control" name="subscription_plan" rows="1"
+                                placeholder="subscription_plan"></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary mb-2">Predict renewal</button></br>
+                        </br>
+                    </form>
+                </div>
+                <div class="col">
+                    <form>
+                        <div class="form-group">
+                            <label for="translation-result">
+                                <blockquote class="blockquote">
+                                    <p class="mb-2">Renewal Forecast:</p>
+                                </blockquote>
+                            </label>
+                            <textarea readonly class="form-control" id="exTextarea" rows="5">{{ response }}</textarea>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        {% endblock body %}
+
+        {% block custom_js %}
+        <script src="{{ url_for('static', filename='script/index.js') }}"></script>
+        {% endblock custom_js %}

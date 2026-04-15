@@ -1,0 +1,38 @@
+stages:
+  renewal_dataset_creation:
+    cmd: python src/data/load_data.py --config=params.yaml
+    deps:
+    - src/data/load_data.py
+    - src/features/build_renewal_features.py
+    - data/external/subscription_accounts.csv
+    outs:
+    - data/raw/subscription_renewal_raw.csv
+
+  renewal_data_split:
+    cmd: python src/data/split_data.py --config=params.yaml
+    deps:
+    - src/data/split_data.py
+    - data/raw/subscription_renewal_raw.csv
+    outs:
+    - data/processed/renewal_train.csv
+    - data/processed/renewal_test.csv
+
+  renewal_model_train:
+    cmd: python src/models/train_renewal_model.py --config=params.yaml
+    deps:
+    - data/processed/renewal_train.csv
+    - data/processed/renewal_test.csv
+    - src/models/train_renewal_model.py
+    params:
+    - gradient_boosting.max_depth
+    - gradient_boosting.n_estimators
+
+  renewal_model_publish:
+    cmd: python src/models/renewal_model_registry.py --config=params.yaml
+    deps:
+    - src/models/renewal_model_registry.py
+    params:
+    - gradient_boosting.max_depth
+    - gradient_boosting.n_estimators
+    outs:
+    - webapp/model_webapp_dir/subscription_renewal_model.joblib

@@ -1,0 +1,28 @@
+# local package
+-e .
+
+# quality and testing
+flake8
+pytest
+httpx
+
+# data and modeling
+numpy
+pandas
+scikit-learn
+joblib
+pyyaml
+optuna
+shap
+evidently
+
+# serving and dashboards
+fastapi
+uvicorn[standard]
+prometheus-client
+streamlit
+
+# existing project dependencies
+cookiecutter
+dvc
+mlflow

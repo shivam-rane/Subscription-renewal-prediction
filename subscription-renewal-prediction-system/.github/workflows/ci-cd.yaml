@@ -1,0 +1,210 @@
+name: Subscription Renewal MLOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model_trials:
+        description: Number of Optuna trials to run
+        required: false
+        default: "5"
+      publish_image:
+        description: Push Docker image to GHCR
+        required: false
+        type: boolean
+        default: false
+      trigger_deploy:
+        description: Call the deployment webhook after publishing
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  DEFAULT_MODEL_TRIALS: "5"
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/subscription-renewal-system
+
+jobs:
+  data_validation:
+    name: Validate Renewal Data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Validate subscription dataset schema
+        run: python src/data/validate_data.py --config params.yaml
+      - name: Upload data validation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: renewal-data-validation-report
+          path: reports/renewal_data_validation.json
+
+  quality_checks:
+    name: Test And Lint
+    runs-on: ubuntu-latest
+    needs: data_validation
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Lint
+        run: python -m flake8 --jobs 1 src tests dashboard app.py
+      - name: Test
+        run: python -m pytest -q tests
+
+  train_renewal_model:
+    name: Train Renewal Model
+    runs-on: ubuntu-latest
+    needs: [data_validation, quality_checks]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Prepare training data
+        run: |
+          python src/data/load_data.py --config params.yaml
+          python src/data/split_data.py --config params.yaml
+      - name: Train optimized renewal model
+        run: |
+          python src/models/train_renewal_model.py --config params.yaml --n-trials \
+          ${{ github.event.inputs.model_trials || env.DEFAULT_MODEL_TRIALS }}
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: renewal-model-artifacts
+          path: |
+            models/subscription_renewal_model.joblib
+            reports/renewal_model_metrics.json
+            reports/renewal_best_params.json
+
+  renewal_monitoring:
+    name: Monitor Renewal Drift
+    runs-on: ubuntu-latest
+    needs: train_renewal_model
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Download model artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: renewal-model-artifacts
+          path: .
+      - name: Prepare monitoring datasets
+        run: |
+          python src/data/load_data.py --config params.yaml
+          python src/data/split_data.py --config params.yaml
+      - name: Generate drift report
+        run: python src/monitoring/renewal_drift_report.py --config params.yaml
+      - name: Upload drift report
+        uses: actions/upload-artifact@v4
+        with:
+          name: renewal-drift-report
+          path: |
+            reports/renewal_drift_report.html
+            reports/renewal_drift_report.json
+
+  build_image:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [quality_checks, train_renewal_model, renewal_monitoring]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: subscription-renewal-system:ci
+
+  publish_image:
+    name: Publish Image
+    runs-on: ubuntu-latest
+    needs: build_image
+    permissions:
+      contents: read
+      packages: write
+    if: >
+      (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.publish_image == 'true') ||
+      (github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.AUTO_PUBLISH_IMAGE == 'true')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: publish_image
+    if: >
+      needs.publish_image.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.trigger_deploy == 'true'
+    env:
+      DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+    steps:
+      - name: Trigger runtime deployment
+        if: env.DEPLOY_WEBHOOK_URL != ''
+        run: |
+          curl -X POST "$DEPLOY_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"image\":\"${{ env.IMAGE_NAME }}:${{ github.sha }}\"}"
+      - name: Skip deployment when webhook is not configured
+        if: env.DEPLOY_WEBHOOK_URL == ''
+        run: echo "DEPLOY_WEBHOOK_URL is not configured; skipping deploy."
