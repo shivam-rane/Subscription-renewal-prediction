@@ -1,195 +1,318 @@
 # Subscription Renewal Prediction System
 
-Production-grade MLOps project for predicting whether a subscription account is likely to renew at the end of its current billing cycle. The system combines data pipelines, model training, API serving, interactive analytics, and monitoring to support business-facing renewal decisions in a practical deployment setup.
+A binary classification system that predicts whether a subscription account will renew at the end of its billing cycle. The project covers data preparation, feature engineering, model training, REST API serving, an interactive Streamlit dashboard with per-account SHAP explanations, and a monitoring layer built on Prometheus, Grafana, and Evidently.
 
-## Overview
+---
 
-This project is designed to help subscription-based businesses identify which accounts are likely to renew and which accounts may require proactive retention action. It goes beyond raw model output by translating renewal probabilities into business-friendly risk segments that teams can act on immediately.
+## Dashboard preview
 
-The repository includes:
+<!-- docs/screenshots/dashboard-overview.png does not exist yet.
+     Add a screenshot to docs/screenshots/ and uncomment the line below.
+![Dashboard — single account forecast](docs/screenshots/dashboard-overview.png)
+-->
 
-- Data validation and preparation workflows
-- Feature engineering for subscription behavior signals
-- Model training and artifact publishing
-- FastAPI-based serving for real-time and batch inference
-- Streamlit dashboard for operational and business users
-- Monitoring with Prometheus, Grafana, and Evidently
-- Test coverage and CI/CD-oriented project structure
+> **No screenshots committed yet.** Place images in `docs/screenshots/` and reference them here.  
+> Suggested captures: `dashboard-overview.png`, `dashboard-batch.png`, `dashboard-drivers.png`.
 
-## Problem Statement
+---
 
-For subscription businesses, knowing whether an account will renew is more actionable than generic retention scoring. Revenue, lifecycle marketing, customer success, and support teams all benefit from early visibility into renewal likelihood.
+## Contents
 
-This project addresses that need by building a binary classification system that predicts:
+- [Problem statement](#problem-statement)
+- [Dataset and features](#dataset-and-features)
+- [Architecture](#architecture)
+- [Model and explainability](#model-and-explainability)
+- [Risk segmentation](#risk-segmentation)
+- [Dynamic recommendations](#dynamic-recommendations)
+- [Dashboard](#dashboard)
+- [API](#api)
+- [Monitoring](#monitoring)
+- [CI/CD pipeline](#cicd-pipeline)
+- [Tech stack](#tech-stack)
+- [How to run](#how-to-run)
+- [Future improvements](#future-improvements)
 
-- `1` = the account is likely to renew
-- `0` = the account is at risk of non-renewal
+---
 
-The final prediction is then translated into operationally useful renewal risk categories so that teams can prioritize interventions, segment outreach, and improve renewal outcomes.
+## Problem statement
 
-## Dataset & Features
+Subscription businesses need early, account-level signals of renewal risk — not just aggregate churn rates. Customer success, lifecycle marketing, and revenue teams each benefit from knowing which accounts are very likely to renew, which are wavering, and which need immediate intervention.
 
-The system uses a subscription account dataset representing common SaaS lifecycle and engagement signals.
+This system outputs a renewal probability per account and maps it to an operational risk tier. A rule-based recommendation engine translates the signals into specific, account-tailored actions, independent of the ML model.
 
-### Core input features
+Target:
+- `1` = account renews
+- `0` = account does not renew
 
-- `monthly_usage_hours`
-- `login_frequency`
-- `last_login_days`
-- `support_tickets`
-- `payment_failures`
-- `subscription_plan`
+---
+
+## Dataset and features
+
+The system is trained on a synthetic subscription-account dataset that mirrors common SaaS engagement patterns.
+
+### Core input signals
+
+| Feature | Description |
+|---|---|
+| `monthly_usage_hours` | Hours of active product use in the billing month |
+| `login_frequency` | Number of sessions in the month |
+| `last_login_days` | Days since the last recorded login |
+| `support_tickets` | Open or recent support ticket count |
+| `payment_failures` | Count of failed payment attempts |
+| `subscription_plan` | Plan tier: `starter`, `growth`, `business`, `enterprise` |
 
 ### Engineered features
 
-The feature engineering layer creates model-ready signals such as:
+`build_renewal_features` in `src/features/build_renewal_features.py` derives seven additional signals before training and scoring.
 
-- `engagement_score`
-- `activity_ratio`
-- `support_pressure`
-- `payment_reliability`
-- `usage_momentum`
-- `plan_value_index`
-- `risk_score`
+| Feature | Formula | Intent |
+|---|---|---|
+| `plan_value_index` | plan score map: starter=0.7, growth=1.0, business=1.3, enterprise=1.6 | Encodes plan-tier commitment |
+| `engagement_score` | `usage_hours / (last_login_days + 1)` | Usage intensity relative to inactivity |
+| `activity_ratio` | `login_frequency / (usage_hours + 1)` | Login sessions per usage hour |
+| `support_pressure` | `support_tickets / (login_frequency + 1)` | Support burden relative to engagement |
+| `payment_reliability` | `1 / (payment_failures + 1)` | Inverted failure count; higher = more reliable |
+| `usage_momentum` | `usage_hours × log1p(login_frequency)` | Usage weighted by session frequency |
+| `risk_score` | `clip(payment_failures×1.75 + last_login_days×0.12 + support_tickets×0.55 − engagement_score×0.85 − plan_value_index×0.35, min=0)` | Weighted composite risk signal |
 
-These features help the model capture account health using product engagement, payment stability, and support burden rather than relying on raw input columns alone.
+Note: `payment_failures`, `payment_reliability`, and `risk_score` are correlated by construction. This affects how SHAP credit is distributed — see [Model and explainability](#model-and-explainability).
 
-## System Architecture
+---
 
-The platform follows a modular MLOps architecture where data preparation, model lifecycle management, serving, dashboarding, and monitoring are separated into clear components.
-
-```mermaid
-flowchart LR
-    A[Data Source] --> B[Data Validation]
-    B --> C[Feature Engineering]
-    C --> D[Model Training]
-    D --> E[Model Registry / Artifacts]
-    E --> F[FastAPI Serving Layer]
-    F --> G[Streamlit Dashboard]
-    F --> H[Monitoring: Prometheus]
-    H --> I[Grafana]
-    F --> J[Drift Detection: Evidently]
-```
-
-### Main components
-
-- **Data Source**: subscription account records used for training and evaluation
-- **Data Validation**: schema and target checks before training
-- **Feature Engineering**: transformation of business activity signals into model features
-- **Model Training**: supervised learning workflow for renewal prediction
-- **Model Registry / Artifacts**: versioned storage of trained model assets
-- **FastAPI Serving Layer**: prediction API for real-time and batch scoring
-- **Streamlit Dashboard**: interactive interface for analysts and business teams
-- **Monitoring & Drift Detection**: operational metrics and data drift analysis
-
-## Model Description
-
-The project uses a binary classification model to estimate the probability that a subscription account will renew. The training workflow includes data preparation, train/test splitting, feature transformation, model fitting, and evaluation before the final artifact is published for serving.
-
-From a business perspective, the most important model output is not just the predicted label, but the renewal probability. That probability becomes the foundation for downstream segmentation, prioritization, and action planning.
-
-## Risk Segmentation Logic
-
-The model predicts a **renewal probability** for each subscription account. To make the output easier for business teams to use, that probability is mapped into three operational categories:
-
-```text
-if proba > 0.75       -> High Renewal Probability
-if 0.4 < proba <= 0.75 -> Moderate Risk
-else                  -> High Churn Risk
-```
-
-### Why this matters
-
-- Raw probabilities are useful for ML systems, but decision-makers often need simpler categories
-- Risk segments help customer success teams prioritize outreach
-- Marketing teams can design targeted campaigns for medium-risk accounts
-- Revenue teams can focus attention on accounts with the highest likelihood of non-renewal
-
-This translation layer improves usability by turning model output into business-friendly signals that support faster and more consistent action.
-
-## MLOps Pipeline
-
-The project is structured as an end-to-end machine learning workflow with repeatable stages for preparing data, training the model, publishing artifacts, and serving predictions.
+## Architecture
 
 ```mermaid
 flowchart LR
-    A[Data Ingestion] --> B[Data Validation]
-    B --> C[Data Split]
-    C --> D[Feature Engineering]
-    D --> E[Model Training]
-    E --> F[Evaluation]
-    F --> G[Save Model]
-    G --> H[Deployment]
-    H --> I[Prediction]
-    I --> J[Monitoring]
+    A[External data CSV] --> B[Data validation]
+    B --> C[Feature engineering]
+    C --> D[Raw CSV with all 13 features]
+    D --> E[Train / test split]
+    E --> F[Model training]
+    F --> G[Artifact: model bundle .joblib]
+    G --> H[FastAPI serving layer]
+    G --> I[Streamlit dashboard]
+    H --> J[Prometheus metrics]
+    J --> K[Grafana]
+    G --> L[Evidently drift report]
 ```
 
-### Pipeline stages
+The dashboard and the API both load the model artifact directly via `RenewalPredictor`; the dashboard does **not** call the REST API at runtime.
 
-- **Data Ingestion**: load raw subscription data
-- **Data Validation**: verify required columns and target integrity
-- **Data Split**: create reproducible training and test datasets
-- **Feature Engineering**: build derived renewal indicators
-- **Model Training**: train the renewal classifier
-- **Evaluation**: measure model quality on held-out data
-- **Save Model**: persist trained artifacts for deployment
-- **Deployment**: expose the model through the serving layer
-- **Prediction**: support single-account and batch inference
-- **Monitoring**: track serving health, performance, and drift
+### Components
 
-## Monitoring & Observability
+| Component | Location | Role |
+|---|---|---|
+| Data validation | `src/data/validate_data.py` | Schema and target integrity checks |
+| Feature engineering | `src/features/build_renewal_features.py` | Derives the 7 engineered features |
+| Training | `src/models/train_renewal_model.py` | Trains, evaluates, and saves the model bundle |
+| Prediction service | `src/models/renewal_predictor.py` | Shared inference class used by both API and dashboard |
+| REST API | `src/api/app.py` | FastAPI with single, batch, explain, health, and `/metrics` endpoints |
+| Dashboard | `dashboard/streamlit_app.py` | Interactive Streamlit UI |
+| Drift monitoring | `src/monitoring/renewal_drift_report.py` | Evidently-based drift analysis with fallback |
 
-The system includes monitoring components expected in a production-oriented ML workflow:
+---
 
-- **Prometheus** for collecting serving metrics
-- **Grafana** for dashboard-based observability
-- **Evidently** for data and prediction drift analysis
+## Model and explainability
 
-This setup supports:
+### Model
 
-- API-level health and metric collection
-- visibility into model-serving behavior
-- detection of input distribution shifts
-- monitoring of prediction stability over time
+The classifier is a **scikit-learn `Pipeline`** with two stages:
 
-Together, these components help maintain trust in the renewal prediction service after deployment.
+```
+ColumnTransformer
+  ├── numeric path  → SimpleImputer(median)
+  │                 → PolynomialFeatures(degree=2, include_bias=False)
+  │                 → StandardScaler()
+  └── categorical   → SimpleImputer(most_frequent)
+       (subscription_plan)
+                    → OneHotEncoder(handle_unknown='ignore')
+↓
+LogisticRegression(C=3.0, max_iter=4000)
+```
 
-## Dashboard Description
+Polynomial expansion of 12 numeric features at degree 2 produces 90 transformed inputs plus 4 OHE columns (one per plan tier), giving the logistic regression 94 features. The combination allows the model to capture multiplicative interactions (e.g., `payment_failures × engagement_score`) without a tree-based architecture.
 
-The project includes a Streamlit dashboard that makes the model accessible to non-engineering stakeholders while still supporting exploratory analysis.
+`params.yaml` carries a stale `model_name: subscription_renewal_gradient_boosting` and gradient-boosting hyperparameter ranges left over from an earlier design iteration. Neither is used by the current training code.
 
-### Dashboard capabilities
+**Threshold selection**: after cross-validation, a validation split is used to search the range [0.35, 0.75] in 1 pp increments, choosing the threshold that maximises accuracy. The selected threshold is stored in the model bundle and used at serving time.
 
-- **Single prediction**: score one subscription account interactively
-- **Batch prediction**: upload a CSV file to score multiple accounts at once
-- **Explainability**: show SHAP-based feature contribution insights
-- **Feature importance visualization**: surface the strongest drivers behind a renewal decision
+**Held-out metrics (from `reports/renewal_model_metrics.json`):**
 
-This makes the dashboard useful for customer success teams, analysts, and internal stakeholders who need both predictions and interpretable reasoning.
+| Metric | Value |
+|---|---|
+| Accuracy | 0.915 |
+| ROC-AUC | 0.975 |
+| Precision | 0.942 |
+| Recall | 0.929 |
+| Prediction threshold | 0.59 |
 
-## Tech Stack
+### Explainability
 
-- **Language**: Python
-- **Modeling**: scikit-learn, Optuna, SHAP
-- **Data**: pandas, NumPy
-- **Serving**: FastAPI, Uvicorn
-- **Dashboard**: Streamlit
-- **Monitoring**: Prometheus, Grafana, Evidently
-- **Experiment / artifact tooling**: MLflow, joblib
-- **Workflow / reproducibility**: DVC
-- **Testing / quality**: pytest, flake8
-- **Containerization**: Docker
-- **CI/CD ready structure**: GitHub Actions-oriented repository layout
+Per-account feature contributions use **`shap.LinearExplainer`** applied to the inner `LogisticRegression` after transforming the account through the preprocessor. This produces exact SHAP values in log-odds space — no approximation is needed for linear models.
 
-## How to Run
+The 90 polynomial SHAP values are folded back to the original 13 feature names:
+- **Pure or quadratic terms** (`x_i`, `x_i²`) — full contribution assigned to feature `i`.
+- **Cross terms** (`x_i × x_j`) — contribution split equally between features `i` and `j`.
 
-### 1. Install dependencies
+**Practical caveat**: `payment_failures`, `payment_reliability`, and `risk_score` are algebraically correlated. When `payment_failures` increases by 1, all three change simultaneously. In the aggregated SHAP chart, the total payment-failure effect is spread across these three features and across their cross-terms with features like `engagement_score`. Individual bars will therefore look smaller than the combined group effect. A grouped permutation importance analysis (`diagnose_model.py`) confirms the combined contribution is substantial (mean ΔAUC ≈ 0.08).
+
+The dashboard subtitle labels the backend as "LinearExplainer on LogisticRegression — exact SHAP in log-odds space" and falls back to a clearly-labelled approximate mode if SHAP is unavailable.
+
+---
+
+## Risk segmentation
+
+The renewal probability is mapped to three operational tiers, defined in `get_risk_profile()`:
+
+| Probability | Segment | Color |
+|---|---|---|
+| > 0.75 | High Renewal Probability | Mint / success |
+| 0.40 – 0.75 (inclusive at 0.40) | Moderate Risk | Amber / warning |
+| < 0.40 | High Churn Risk | Rose / danger |
+
+Each tier carries a short advisory text used in the dashboard's full-width banner below the KPI strip.
+
+---
+
+## Dynamic recommendations
+
+`build_recommendations(account, proba)` in `dashboard/streamlit_app.py` produces up to three prioritised action items by evaluating the account's actual signal values. It is entirely rule-based and runs independently of the model.
+
+| Condition | Priority | Action |
+|---|---|---|
+| `payment_failures ≥ 1` | 1 (highest) | Recover billing: card-update email + finance confirmation |
+| `last_login_days ≥ 30` | 2 | Re-engage dormant account: win-back campaign + CSM check-in |
+| `last_login_days 14–29` | 3 | Watch engagement: value nudge before going cold |
+| `login_frequency ≤ 5` or `usage_hours ≤ 15` | 3 | Lift adoption: onboarding invite + surface unused features |
+| `support_tickets ≥ 3` | 2 | De-risk support: proactive CSM close-the-loop call |
+| `proba > 0.75` and no risks triggered | 2 | Upsell: next plan tier + testimonial / referral ask |
+| Fallback | 3 | Stable account: maintain touchpoints |
+
+Rules are evaluated independently; results are sorted by priority and the top three are displayed. Because conditions can overlap (e.g., payment failures AND dormancy), a single account can generate two or three distinct items.
+
+---
+
+## Dashboard
+
+The dashboard is a **1 090-line Streamlit application** with a custom aurora glass design system. It loads `RenewalPredictor` directly from the model artifact — no network call to the API is made.
+
+### Layout
+
+Two tabs in the main content area:
+
+**Single forecast tab**
+
+- Action bar: title and hint on the left; "Predict renewal" button pinned to the right.
+- After prediction, a three-card KPI strip appears:
+  - **Renewal probability** — large percentage hero figure, colour-coded to segment.
+  - **Risk segment** — coloured pill (High Renewal / Moderate Risk / High Churn Risk).
+  - **Recommended action** — up to three rule-based items with Tabler icons.
+- Full-width advisory banner with a segment-coloured left border.
+- Two-column detail section: Account snapshot table on the left; Prediction drivers bar chart on the right.
+
+**Batch scoring tab**
+
+- Full-width CSV drop zone.
+- Styled results table (original features + `renewal_prediction`, `renewal_probability`, `renewal_label`).
+- Segment summary counts below the table.
+- Download button for the scored CSV.
+
+### Sidebar
+
+Six slider controls (usage, login frequency, last-login days, support tickets, payment failures) plus a plan selectbox. Current values are displayed inline next to each slider in the appropriate accent colour (teal for positive signals, rose for risk signals). Two quick-preset buttons load a "High risk" or "High engagement" scenario.
+
+### Design system
+
+The aurora glass palette uses `rgba` layers over a `#13102B` base with three radial gradient mesh blobs (violet, blue, teal). All controls (sliders, inputs, buttons, the file uploader) are re-styled with a shared aurora CSS token set. No third-party component library is used — all customisation is injected via `st.markdown(..., unsafe_allow_html=True)`.
+
+---
+
+## API
+
+`src/api/app.py` is a FastAPI application. Start it with:
+
+```bash
+uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Service info and feature list |
+| `GET` | `/health` | Liveness check and artifact path |
+| `POST` | `/predict-renewal` | Score one account |
+| `POST` | `/predict-renewal/batch` | Score up to 1 000 accounts |
+| `POST` | `/explain-renewal` | Score one account and return top SHAP factors |
+| `GET` | `/metrics` | Prometheus exposition format |
+
+### Prometheus metrics
+
+| Metric | Type |
+|---|---|
+| `renewal_prediction_requests_total` | Counter |
+| `renewal_prediction_errors_total` | Counter |
+| `renewal_model_latency_seconds` | Histogram (buckets 10 ms – 5 s) |
+| `renewal_model_error_rate` | Gauge |
+
+---
+
+## Monitoring
+
+Drift detection (`src/monitoring/renewal_drift_report.py`) compares the training distribution against the test split using **Evidently** (`DataDriftPreset` + `ClassificationPreset`). If Evidently's report generation fails, a manual column-wise mean-difference comparison is used as a fallback. Both paths write to `reports/renewal_drift_report.json`.
+
+Prometheus scrapes the API at `/metrics` every 15 seconds (configured in `monitoring/prometheus.yml`). A Grafana dashboard definition lives in `monitoring/grafana/dashboards/`.
+
+---
+
+## CI/CD pipeline
+
+`.github/workflows/ci-cd.yaml` defines eight sequential jobs:
+
+| Job | Action |
+|---|---|
+| `data_validation` | `python src/data/validate_data.py` |
+| `test_and_lint` | `pytest` |
+| `train_model` | `python src/models/train_renewal_model.py` |
+| `monitor_drift` | `python src/monitoring/renewal_drift_report.py` |
+| `build_image` | `docker build` → `ghcr.io/<owner>/subscription-renewal-system:latest` |
+| `publish_image` | Push to GHCR with `GITHUB_TOKEN` |
+| `deploy` | Placeholder echo step |
+| `monitor_production` | Health-check curl (placeholder) |
+
+---
+
+## Tech stack
+
+| Area | Library / tool | Notes |
+|---|---|---|
+| Language | Python 3.11 | |
+| Modeling | scikit-learn | LogisticRegression pipeline |
+| Explainability | shap | LinearExplainer on inner LR |
+| Data | pandas, NumPy | |
+| Serving | FastAPI, Uvicorn | |
+| Dashboard | Streamlit | Custom aurora-glass CSS |
+| Monitoring | Prometheus, Grafana, Evidently | |
+| Serialisation | joblib | Model bundle persistence |
+| Testing | pytest, flake8 | |
+| Containerisation | Docker | Image pushed to GHCR |
+| CI/CD | GitHub Actions | 8-job workflow |
+| Optuna | In `requirements.txt` | Installed but not called in training code |
+| MLflow, DVC | In `requirements.txt` | Installed but not integrated in current code |
+
+---
+
+## How to run
+
+All commands are run from the project root.
+
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Validate and prepare data
+### Prepare data
 
 ```bash
 python src/data/validate_data.py --config params.yaml
@@ -197,47 +320,54 @@ python src/data/load_data.py --config params.yaml
 python src/data/split_data.py --config params.yaml
 ```
 
-### 3. Train the model
+### Train the model
 
 ```bash
-python src/models/train_renewal_model.py --config params.yaml --n-trials 10
+python src/models/train_renewal_model.py --config params.yaml
 ```
 
-### 4. Publish the serving artifact
+`--n-trials` is accepted but the current training code uses a fixed `LogisticRegression(C=3.0)` — no Optuna search is performed.
+
+### Sync the artifact to the serving path
 
 ```bash
 python src/models/renewal_model_registry.py --config params.yaml
 ```
 
-### 5. Start the API
+### Start the API
 
 ```bash
 uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 6. Launch the dashboard
+### Launch the dashboard
 
 ```bash
 streamlit run dashboard/streamlit_app.py
 ```
 
-### 7. Generate a drift report
+### Generate a drift report
 
 ```bash
 python src/monitoring/renewal_drift_report.py --config params.yaml
 ```
 
-## Future Improvements
+### Run the model diagnostic
 
-- Add automated model retraining triggers based on drift thresholds
-- Introduce model version comparison dashboards
-- Extend batch scoring with scheduled jobs and cloud storage integration
-- Add role-based access control for production dashboard usage
-- Track business KPIs alongside model metrics for stronger feedback loops
-- Package deployment with infrastructure-as-code for cloud environments
+```bash
+python scripts/diagnose_model.py
+```
 
-## Conclusion
+Prints permutation importances, grouped payment-cluster importance, held-out metrics, and a controlled `payment_failures` sweep to verify signal sensitivity.
 
-The Subscription Renewal Prediction System is a practical MLOps implementation focused on business-ready renewal intelligence. It combines predictive modeling, deployment, explainability, and observability into a single workflow that reflects how ML systems are built and operated in production environments.
+---
 
-By translating renewal probabilities into actionable risk segments, the system helps teams move from model output to operational decision-making with much greater clarity.
+## Future improvements
+
+- Replace the fixed LogisticRegression with a tuned gradient-boosting model (GBM hyperparameter ranges are already in `params.yaml`) and re-enable the Optuna search that the config anticipates.
+- Integrate MLflow tracking for experiment comparison across training runs.
+- Activate DVC for data and model versioning to make the pipeline reproducible from any checkpoint.
+- Add automated retraining triggers when the Evidently drift score exceeds a configurable threshold.
+- Extend the grouped-importance view from `diagnose_model.py` into the dashboard so users can see the payment-cluster and engagement-cluster contributions directly.
+- Complete the `deploy` and `monitor_production` CI/CD jobs with a real target environment.
+- Add role-based access control if the dashboard is exposed beyond a trusted internal network.

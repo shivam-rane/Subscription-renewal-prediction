@@ -81,9 +81,5 @@ def build_renewal_features(
             "risk_score",
         ],
     )
-    passthrough = [
-        column
-        for column in frame.columns
-        if column not in model_features and column != "subscription_plan"
-    ]
+    passthrough = [column for column in frame.columns if column not in model_features]
     return frame[passthrough + model_features]

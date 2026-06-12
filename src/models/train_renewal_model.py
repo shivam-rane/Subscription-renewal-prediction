@@ -7,7 +7,9 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -18,7 +20,9 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, PolynomialFeatures, StandardScaler
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -27,12 +31,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.config import load_config, resolve_path
 from src.data.load_data import load_raw_data
 from src.data.split_data import split_and_saved_data
-
-try:
-    import optuna
-except ImportError:  # pragma: no cover - optional in lightweight local envs
-    optuna = None
-
 
 def get_feat_and_target(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, pd.Series]:
     features = df.drop(columns=[target])
@@ -51,78 +49,107 @@ def ensure_training_data(config_path: str | Path = "params.yaml") -> None:
         config["processed_data_config"]["test_data_csv"],
         config_path,
     )
+    required_inputs = set(config["raw_data_config"]["input_features"])
 
-    if not raw_data_path.exists():
+    refresh_raw = not raw_data_path.exists()
+    if not refresh_raw:
+        raw_columns = set(pd.read_csv(raw_data_path, nrows=1).columns)
+        refresh_raw = not required_inputs.issubset(raw_columns)
+    if refresh_raw:
         load_raw_data(config_path=config_path)
-    if not train_data_path.exists() or not test_data_path.exists():
+
+    refresh_processed = not train_data_path.exists() or not test_data_path.exists()
+    if not refresh_processed:
+        train_columns = set(pd.read_csv(train_data_path, nrows=1).columns)
+        test_columns = set(pd.read_csv(test_data_path, nrows=1).columns)
+        refresh_processed = not required_inputs.issubset(train_columns) or not required_inputs.issubset(test_columns)
+    if refresh_processed:
         split_and_saved_data(config_path=config_path)
 
 
-def get_search_space(trial, gb_config: dict) -> dict:
-    max_features_choices = [
-        None if value == "null" else value for value in gb_config["max_features"]
+def get_feature_types(features: pd.DataFrame) -> tuple[list[str], list[str]]:
+    categorical = [
+        column
+        for column in features.columns
+        if pd.api.types.is_object_dtype(features[column])
+        or pd.api.types.is_string_dtype(features[column])
+        or isinstance(features[column].dtype, pd.CategoricalDtype)
     ]
-    return {
-        "n_estimators": trial.suggest_int(
-            "n_estimators",
-            gb_config["n_estimators"][0],
-            gb_config["n_estimators"][1],
-        ),
-        "learning_rate": trial.suggest_float(
-            "learning_rate",
-            gb_config["learning_rate"][0],
-            gb_config["learning_rate"][1],
-            log=True,
-        ),
-        "max_depth": trial.suggest_int(
-            "max_depth",
-            gb_config["max_depth"][0],
-            gb_config["max_depth"][1],
-        ),
-        "min_samples_split": trial.suggest_int(
-            "min_samples_split",
-            gb_config["min_samples_split"][0],
-            gb_config["min_samples_split"][1],
-        ),
-        "min_samples_leaf": trial.suggest_int(
-            "min_samples_leaf",
-            gb_config["min_samples_leaf"][0],
-            gb_config["min_samples_leaf"][1],
-        ),
-        "subsample": trial.suggest_float(
-            "subsample",
-            gb_config["subsample"][0],
-            gb_config["subsample"][1],
-        ),
-        "max_features": trial.suggest_categorical(
-            "max_features",
-            max_features_choices,
-        ),
-    }
+    numeric = [column for column in features.columns if column not in categorical]
+    return numeric, categorical
 
 
-def get_default_params(gb_config: dict) -> dict:
-    max_features = gb_config["max_features"][0]
-    if max_features == "null":
-        max_features = None
-    return {
-        "n_estimators": gb_config["n_estimators"][0],
-        "learning_rate": gb_config["learning_rate"][0],
-        "max_depth": gb_config["max_depth"][0],
-        "min_samples_split": gb_config["min_samples_split"][0],
-        "min_samples_leaf": gb_config["min_samples_leaf"][0],
-        "subsample": gb_config["subsample"][0],
-        "max_features": max_features,
-    }
+def build_training_pipeline(
+    numeric_features: list[str],
+    categorical_features: list[str],
+) -> Pipeline:
+    numeric_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("poly", PolynomialFeatures(degree=2, include_bias=False)),
+            ("scaler", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            (
+                "encoder",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+            ),
+        ]
+    )
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipeline, numeric_features),
+            ("cat", categorical_pipeline, categorical_features),
+        ],
+        remainder="drop",
+    )
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("model", LogisticRegression(C=3.0, max_iter=4000)),
+        ]
+    )
+
+
+def select_prediction_threshold(
+    model: Pipeline,
+    train_x: pd.DataFrame,
+    train_y: pd.Series,
+    random_state: int,
+) -> float:
+    fit_x, valid_x, fit_y, valid_y = train_test_split(
+        train_x,
+        train_y,
+        test_size=0.2,
+        random_state=random_state,
+        stratify=train_y,
+    )
+    model.fit(fit_x, fit_y)
+    probabilities = model.predict_proba(valid_x)[:, 1]
+
+    best_threshold = 0.5
+    best_accuracy = -1.0
+    for threshold_int in range(35, 76):
+        threshold = threshold_int / 100.0
+        predictions = (probabilities >= threshold).astype(int)
+        score = accuracy_score(valid_y, predictions)
+        if score > best_accuracy:
+            best_accuracy = score
+            best_threshold = threshold
+    return float(best_threshold)
 
 
 def evaluate_model(
-    model: GradientBoostingClassifier,
+    model: Pipeline,
     test_x: pd.DataFrame,
     test_y: pd.Series,
+    prediction_threshold: float,
 ) -> dict:
     probabilities = model.predict_proba(test_x)[:, 1]
-    predictions = (probabilities >= 0.5).astype(int)
+    predictions = (probabilities >= prediction_threshold).astype(int)
     return {
         "accuracy": accuracy_score(test_y, predictions),
         "precision": precision_score(test_y, predictions, zero_division=0),
@@ -162,7 +189,6 @@ def train_and_evaluate(
     positive_label = int(config["raw_data_config"].get("positive_class", 1))
     random_state = config["raw_data_config"]["random_state"]
     cv_folds = config["training"]["cv_folds"]
-    requested_trials = n_trials or config["training"]["n_trials"]
     scoring = config["training"].get("scoring", "roc_auc")
 
     train = pd.read_csv(train_data_path)
@@ -170,61 +196,36 @@ def train_and_evaluate(
     train_x, train_y = get_feat_and_target(train, target)
     test_x, test_y = get_feat_and_target(test, target)
 
-    gb_config = config["gradient_boosting"]
+    numeric_features, categorical_features = get_feature_types(train_x)
+    pipeline = build_training_pipeline(numeric_features, categorical_features)
     cv = StratifiedKFold(
         n_splits=cv_folds,
         shuffle=True,
         random_state=random_state,
     )
 
-    if optuna is not None and requested_trials > 1:
-        def objective(trial) -> float:
-            search_params = get_search_space(trial, gb_config)
-            model = GradientBoostingClassifier(
-                random_state=random_state,
-                **search_params,
-            )
-            scores = cross_val_score(
-                model,
-                train_x,
-                train_y,
-                cv=cv,
-                scoring=scoring,
-                n_jobs=1,
-            )
-            return float(scores.mean())
-
-        study = optuna.create_study(
-            direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=random_state),
-        )
-        study.optimize(objective, n_trials=requested_trials)
-        best_params = study.best_params
-        best_cv_score = float(study.best_value)
-    else:
-        best_params = get_default_params(gb_config)
-        probe_model = GradientBoostingClassifier(
-            random_state=random_state,
-            **best_params,
-        )
-        probe_scores = cross_val_score(
-            probe_model,
-            train_x,
-            train_y,
-            cv=cv,
-            scoring=scoring,
-            n_jobs=1,
-        )
-        best_cv_score = float(probe_scores.mean())
-
-    model = GradientBoostingClassifier(
-        random_state=random_state,
-        **best_params,
+    probe_scores = cross_val_score(
+        pipeline,
+        train_x,
+        train_y,
+        cv=cv,
+        scoring=scoring,
+        n_jobs=1,
     )
+    best_cv_score = float(probe_scores.mean())
+    prediction_threshold = select_prediction_threshold(
+        model=pipeline,
+        train_x=train_x,
+        train_y=train_y,
+        random_state=random_state,
+    )
+
+    model = build_training_pipeline(numeric_features, categorical_features)
     model.fit(train_x, train_y)
-    metrics = evaluate_model(model, test_x, test_y)
+    metrics = evaluate_model(model, test_x, test_y, prediction_threshold=prediction_threshold)
     metrics["best_cv_score"] = best_cv_score
-    metrics["n_trials"] = requested_trials
+    metrics["prediction_threshold"] = prediction_threshold
+    metrics["n_trials"] = 1
 
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,13 +238,20 @@ def train_and_evaluate(
             "input_features": config["raw_data_config"]["input_features"],
             "target": target,
             "positive_label": positive_label,
-            "prediction_threshold": float(config["training"].get("prediction_threshold", 0.5)),
+            "prediction_threshold": prediction_threshold,
             "label_map": {0: "not_renewed", 1: "renewed"},
-            "training_feature_medians": train_x.median().to_dict(),
+            "training_feature_medians": train_x.select_dtypes(include="number").median().to_dict(),
         },
-        "best_params": best_params,
+        "best_params": {
+            "model_type": "logistic_regression",
+            "polynomial_degree": 2,
+            "regularization_c": 3.0,
+            "threshold_selection": "validation_accuracy",
+            "selected_threshold": prediction_threshold,
+        },
         "metrics": metrics,
     }
+    best_params = bundle["best_params"]
     joblib.dump(bundle, artifact_path)
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     best_params_path.write_text(json.dumps(best_params, indent=2), encoding="utf-8")
@@ -252,7 +260,7 @@ def train_and_evaluate(
         "artifact_path": str(artifact_path),
         "metrics_path": str(metrics_path),
         "best_params_path": str(best_params_path),
-        "best_params": best_params,
+        "best_params": bundle["best_params"],
         "metrics": metrics,
     }
 
